@@ -1,0 +1,76 @@
+# This is a basic workflow to help you get started with Actions
+
+name: Spinnaker Pre Install
+env:
+  SPINNAKER_VERSION: 1.22.1
+  REGISTRY_URL: "gcr.io/spinnaker-marketplace/"
+  NEW_REGISTRY_URL: "registry.cn-chengdu.aliyuncs.com/ops-k8s/"
+  TAG_FILE: "tagfile.txt"
+  BOM_DIR: ".boms"
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    ## 安装Halyard部署工具
+    - name: 01- Install Halyard
+      run: |
+        echo "###user" && whoami 
+        echo "###system version" &&  cat /etc/issue
+        echo "###docker info" && docker info 
+        
+        # curl -O https://raw.githubusercontent.com/spinnaker/halyard/master/install/debian/InstallHalyard.sh
+        echo "###### pwd ######"
+        pwd
+        chmod +x ./InstallHalyard.sh
+        sudo bash InstallHalyard.sh --user runner -y
+        hal -v    
+    
+    ## 获取spinnaker版本文件
+    - name: 02- Get Version File
+      run: |  
+        hal version list
+        echo "###### hal version bom ######"
+        #hal version bom ${SPINNAKER_VERSION} -q -o yaml   
+        hal version bom ${SPINNAKER_VERSION} -q -o yaml >${SPINNAKER_VERSION}.yml
+        ## 获取旧版本bom文件
+        tar zxf updates/*.tar.gz 
+    ## 解析版本文件生成镜像标签
+    ## 上传到阿里云镜像仓库
+    ## docker https://github.com/Azure/docker-login
+    - name: 03- Push Image To Aliyun
+      run: |
+        python3 tools/fileprocess.py ${SPINNAKER_VERSION}.yml  ${TAG_FILE} ${BOM_DIR} 
+        ls ${BOM_DIR}
+      
+        echo  -e "\033[32m  ---> Tag File ---> \033[0m"
+        cat ${TAG_FILE}
+        docker login -u ${{ secrets.DOCKER_USER}} -p ${{ secrets.DOCKER_PASSWD}} ${NEW_REGISTRY_URL}
+        for tag in $(cat ${TAG_FILE})
+        do 
+           echo  -e "\033[32m  ---> pull ---> ${REGISTRY_URL}${tag} \033[0m"
+           docker pull ${REGISTRY_URL}${tag}
+           docker tag ${REGISTRY_URL}${tag} ${NEW_REGISTRY_URL}${tag}
+           docker push ${NEW_REGISTRY_URL}${tag}
+        done
+    ## 收集镜像tag文件和下载镜像的脚本
+    - name: 04- Create Image File
+      run : |
+        mkdir -p artifacts/${SPINNAKER_VERSION}
+        mv ${TAG_FILE} artifacts/${SPINNAKER_VERSION}/
+        mv tools/GetImages.sh artifacts/${SPINNAKER_VERSION}/
+        mv ${BOM_DIR} artifacts/${SPINNAKER_VERSION}/
+        #mkdir -p artifacts/${SPINNAKER_VERSION}/${BOM_DIR}/bom
+        mv ${SPINNAKER_VERSION}.yml artifacts/${SPINNAKER_VERSION}/${BOM_DIR}/bom/
+        
+    ## artifact https://github.com/actions/upload-artifact
+    - uses: actions/upload-artifact@v2
+      with: 
+        name: ${{ env.SPINNAKER_VERSION }}-Image-Script
+        path: artifacts/*
